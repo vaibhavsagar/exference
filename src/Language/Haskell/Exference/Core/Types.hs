@@ -108,7 +108,7 @@ data HsType = TypeVar      {-# UNPACK #-} !TVarId
 
 data HsTypeOffset = HsTypeOffset !HsType {-# UNPACK #-} !Int
 
-type TypeVarIndex = M.Map Name Int
+type TypeVarIndex l = M.Map (Name l) Int
 
 data HsTypeClass = HsTypeClass
   { tclass_name :: QualifiedName
@@ -179,18 +179,18 @@ instance Show HsType where
     . showString " => "
     . showsPrec (-2) t
 
-showHsType :: TypeVarIndex -> HsType -> String
+showHsType :: TypeVarIndex l -> HsType -> String
 showHsType convMap t = h 0 t ""
  where
   h :: Int -> HsType -> ShowS
   h _ (TypeVar i)      = showString
                        $ maybe "badNameInternalError"
-                               (\(Ident n, _) -> n)
+                               (\(Ident _ n, _) -> n)
                        $ L.find ((i ==) .  snd)
                        $ M.toList convMap
   h _ (TypeConstant i) = showString
                        $ maybe "badNameInternalError"
-                               (\(Ident n, _) -> n)
+                               (\(Ident _ n, _) -> n)
                        $ L.find ((i ==) .  snd)
                        $ M.toList convMap
   h _ (TypeCons s) = shows s
@@ -223,7 +223,7 @@ instance Observable HsType where
 instance Show HsConstraint where
   show (HsConstraint c ps) = unwords $ show (tclass_name c) : map show ps
 
-showHsConstraint :: TypeVarIndex
+showHsConstraint :: TypeVarIndex l
                  -> HsConstraint
                  -> String
 showHsConstraint convMap (HsConstraint c ps) =

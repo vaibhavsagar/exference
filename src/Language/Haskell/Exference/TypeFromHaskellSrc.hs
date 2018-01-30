@@ -53,7 +53,7 @@ import Debug.Trace
 
 -- type ConversionMonad = EitherT String (State (Int, ConvMap))
 
-data ConvData = ConvData Int T.TypeVarIndex
+data ConvData l = ConvData Int (T.TypeVarIndex l)
 
 haskellSrcExtsParseMode :: String -> P.ParseMode
 haskellSrcExtsParseMode s = P.ParseMode (s++".hs")
@@ -76,13 +76,13 @@ haskellSrcExtsParseMode s = P.ParseMode (s++".hs")
 convertTypeNoDecl
   :: Monad m
   => [T.HsTypeClass]
-  -> Maybe ModuleName
+  -> Maybe (ModuleName l)
   -> [T.QualifiedName]
-  -> Type
+  -> (Type l)
   -> EitherT
        String
        (MultiRWST r w s m)
-       (T.HsType, T.TypeVarIndex)
+       (T.HsType, T.TypeVarIndex l)
 convertTypeNoDecl tcs mn ds t =
   mapEitherT conv $ convertTypeNoDeclInternal tcs mn ds t
  where
@@ -93,37 +93,37 @@ convertTypeNoDecl tcs mn ds t =
            ]
 
 convertTypeNoDeclInternal
-  :: (MonadMultiState ConvData m)
+  :: (MonadMultiState (ConvData l) m)
   => [T.HsTypeClass]
-  -> Maybe ModuleName -- default (for unqualified stuff)
-                      -- Nothing uses a broad search for lookups
+  -> Maybe (ModuleName l) -- default (for unqualified stuff)
+                          -- Nothing uses a broad search for lookups
   -> [T.QualifiedName] -- list of fully qualified data types
                                          -- (to keep things unique)
-  -> Type
+  -> (Type l)
   -> EitherT String m T.HsType
 convertTypeNoDeclInternal tcs defModuleName ds ty = helper ty
  where
-  helper (TyFun a b)      = T.TypeArrow
+  helper (TyFun _ a b)      = T.TypeArrow
                               <$> helper a
                               <*> helper b
-  helper (TyTuple _ ts)   | n <- length ts
+  helper (TyTuple _ _ ts)   | n <- length ts
                           = foldl T.TypeApp (T.TypeCons $ T.TupleCon n)
                             <$> mapM helper ts
-  helper (TyApp a b)      = T.TypeApp
+  helper (TyApp _ a b)      = T.TypeApp
                               <$> helper a
                               <*> helper b
-  helper (TyVar vname)    = do
+  helper (TyVar _ vname)    = do
                               i <- getVar vname
                               return $ T.TypeVar i
-  helper (TyCon name)     = return
+  helper (TyCon _ name)     = return
                           $ T.TypeCons
                           $ convertQName defModuleName ds name
-  helper (TyList t)       = T.TypeApp (T.TypeCons T.ListCon) <$> helper t
-  helper (TyParen t)      = helper t
+  helper (TyList _ t)       = T.TypeApp (T.TypeCons T.ListCon) <$> helper t
+  helper (TyParen _ t)      = helper t
   helper TyInfix{}        = left "infix operator"
   helper TyKind{}         = left "kind annotation"
   helper TyPromoted{}     = left "promoted type"
-  helper (TyForall maybeTVars cs t) =
+  helper (TyForall _ maybeTVars cs t) =
     T.TypeForall
       <$> case maybeTVars of
             Nothing -> return []
@@ -132,7 +132,7 @@ convertTypeNoDeclInternal tcs defModuleName ds ty = helper ty
       <*> helper t
   helper x                = left $ "unknown type element: " ++ show x -- TODO
 
-getVar :: MonadMultiState ConvData m => Name -> m Int
+getVar :: MonadMultiState (ConvData l) m => Name l -> m Int
 getVar n = do
   ConvData next m <- mGet
   case M.lookup n m of
@@ -143,7 +143,7 @@ getVar n = do
       return i
 
 -- defaultModule -> potentially-qualified-name-thingy -> exference-q-name
-convertQName :: Maybe ModuleName -> [T.QualifiedName] -> QName -> T.QualifiedName
+convertQName :: Maybe (ModuleName l) -> [T.QualifiedName] -> QName l -> T.QualifiedName
 convertQName _ _ (Special UnitCon)          = T.TupleCon 0
 convertQName _ _ (Special ListCon)          = T.ListCon
 convertQName _ _ (Special FunCon)           = error "no support for FunCon" -- i wonder how we reach this..
@@ -159,12 +159,12 @@ convertQName Nothing ds (UnQual (Ident s))  = fromMaybe (T.QualifiedName [] s)
   p _ = False
 convertQName Nothing _ (UnQual s)           = convertName s
 
-convertName :: Name -> T.QualifiedName
+convertName :: Name l -> T.QualifiedName
 convertName (Ident s)  = T.QualifiedName [] s
 convertName (Symbol s) = T.QualifiedName [] $ "(" ++ s ++ ")"
 
-convertModuleName :: ModuleName -> Name -> T.QualifiedName
-convertModuleName (ModuleName n) (Ident s)  = parseQualifiedName
+convertModuleName :: ModuleName l -> Name l -> T.QualifiedName
+convertModuleName (ModuleName _ n) (Ident _ s)  = parseQualifiedName
                                             $ n ++ "." ++ s
 convertModuleName (ModuleName n) (Symbol s) = parseQualifiedName
                                             $ "(" ++ n ++ "." ++ s ++ ")"
@@ -174,11 +174,11 @@ parseQualifiedName s = let (prebracket, operator) = span (/='(') s
   in liftA2 T.QualifiedName init last $ wordsBy (=='.') prebracket ++ words operator
 
 convertConstraint
-  :: (MonadMultiState ConvData m)
+  :: (MonadMultiState (ConvData l) m)
   => [T.HsTypeClass]
-  -> Maybe ModuleName
+  -> Maybe (ModuleName l)
   -> [T.QualifiedName]
-  -> Asst
+  -> Asst l
   -> EitherT String m T.HsConstraint
 convertConstraint tcs defModuleName@(Just _) ds (ClassA qname types)
   | str    <- convertQName defModuleName ds qname
@@ -225,8 +225,8 @@ convertConstraint env defModuleName ds (ParenA c)
 convertConstraint _ _ _ c
   = left $ "bad constraint: " ++ show c
 
-tyVarTransform :: MonadMultiState ConvData m
-               => TyVarBind
+tyVarTransform :: MonadMultiState (ConvData l) m
+               => TyVarBind l
                -> EitherT String m T.TVarId
 tyVarTransform (KindedVar _ _) = left $ "KindedVar"
 tyVarTransform (UnkindedVar n) = getVar n
