@@ -15,7 +15,7 @@ where
 
 
 
-import Language.Haskell.Exference.Core.Types
+import Language.Haskell.Exference.Core.Types as T
 import Language.Haskell.Exference.Core.TypeUtils
 import Language.Haskell.Exference.TypeFromHaskellSrc
 
@@ -63,17 +63,17 @@ applyTypeDecls m = go
                          | t1' <- go t1
                          , t2' <- go t2
                          ]
-  go (TypeApp l r) = goApp [r] l
+  go (T.TypeApp l r) = goApp [r] l
   go (TypeForall vars constrs t) = TypeForall vars constrs `liftM` go t
-  goApp rs (TypeApp l r)      = goApp (r:rs) l
+  goApp rs (T.TypeApp l r)      = goApp (r:rs) l
   goApp rs (TypeCons qn)    = case M.lookup qn m of
-    Nothing                  -> foldl TypeApp (TypeCons qn) `liftM` mapM go rs
+    Nothing                  -> foldl T.TypeApp (TypeCons qn) `liftM` mapM go rs
     Just (Left _)            -> Right $ TypeCons qn -- no need to show the
                                    -- same error multiple times, or is there?
     Just (Right (HsTypeDecl _ vs t))
                              | i <- length vs
                              , i <= length rs
-                             -> [ foldl TypeApp substituted pUnchanged
+                             -> [ foldl T.TypeApp substituted pUnchanged
                                 | rs' <- mapM go rs
                                 , let pAffected = take i rs'
                                 , let pUnchanged = drop i rs'
@@ -81,17 +81,20 @@ applyTypeDecls m = go
                                 , let substituted = snd $ applySubsts substs t
                                 ]
     _                        -> Left $ "wrong number of parameters for type declaration " ++ show qn
-  goApp rs l               = foldl1 TypeApp `liftM` mapM go (l:rs)
+  goApp rs l               = foldl1 T.TypeApp `liftM` mapM go (l:rs)
 
 getTypeDecls :: ( Monad m
+                , Show l
+                , Ord l
                 )
              => [QualifiedName]
-             -> [Module]
+             -> [Module l]
              -> MultiRWST r w s m [Either String HsTypeDecl]
 getTypeDecls ds modules = do
   rawList <- sequence $ do
-    Module _loc mn _pragma _warning _mexp _imp decls <- modules
-    TypeDecl _loc name rawVars rawTy <- decls
+    Module _ (Just mh) _pragma _imp decls <- modules
+    let mn = moduleName mh
+    (name, rawVars, rawTy) <- typeComponents <$> decls
     return $ liftM (bimap (("when parsing type declaration "++show name++": ")++) id)
            $ runEitherT
            $ do
@@ -108,29 +111,43 @@ getTypeDecls ds modules = do
                 $ map (\x -> (tdecl_name x, x))
                 $ rights rawList
   return $ [ e | e@(Left _) <- rawList ] ++ M.elems resultMap
+  where
+    moduleName :: ModuleHead l -> ModuleName l
+    moduleName (ModuleHead _ name _ _) = name
+    typeComponents :: Decl l -> (Name l, [TyVarBind l], Type l)
+    typeComponents (TypeDecl _ declHead typ) = let
+      decomp h = case h of
+        DHead   _      name -> (name, [])
+        DHInfix _ bind name -> (name, [bind])
+        DHParen _ hd        -> decomp hd
+        DHApp   _ hd b      -> let (n, bs) = decomp h in (n, b:bs)
+      triple = let (n, bs) = decomp declHead in (n, bs, typ)
+      in triple
 
 convertType :: ( Monad m
+               , Show l
+               , Ord l
                )
             => [HsTypeClass]
-            -> Maybe ModuleName
+            -> Maybe (ModuleName l)
             -> [QualifiedName]
             -> TypeDeclMap
-            -> Type
-            -> EitherT String (MultiRWST r w s m) (HsType, TypeVarIndex)
+            -> Type l
+            -> EitherT String (MultiRWST r w s m) (HsType, TypeVarIndex l)
 convertType tcs mn ds declMap t = do
   (ty, index) <- convertTypeNoDecl tcs mn ds t
   ty' <- hoistEither $ applyTypeDecls (M.map Right declMap) ty
   return $ (ty', index)
 
 convertTypeInternal
-  :: (MonadMultiState ConvData m)
+  :: (MonadMultiState (ConvData l) m, Show l, Ord l)
   => [HsTypeClass]
-  -> Maybe ModuleName -- default (for unqualified stuff)
+  -> Maybe (ModuleName l) -- default (for unqualified stuff)
                       -- Nothing uses a broad search for lookups
   -> [QualifiedName] -- list of fully qualified data types
                                          -- (to keep things unique)
   -> TypeDeclMap
-  -> Type
+  -> Type l
   -> EitherT String m HsType
 convertTypeInternal tcs defModuleName ds declMap t = do
   ty <- convertTypeNoDeclInternal tcs defModuleName ds t
@@ -140,7 +157,7 @@ convertTypeInternal tcs defModuleName ds declMap t = do
 parseType
   :: (Monad m)
   => [HsTypeClass]
-  -> Maybe ModuleName
+  -> Maybe (ModuleName l)
   -> [QualifiedName]
   -> TypeDeclMap
   -> P.ParseMode
@@ -148,7 +165,7 @@ parseType
   -> EitherT
        String
        (MultiRWST r w s m)
-       (HsType, TypeVarIndex)
+       (HsType, TypeVarIndex l)
 parseType tcs mn ds tDeclMap m s = case P.parseTypeWithMode m s of
   f@(P.ParseFailed _ _) -> left $ show f
   P.ParseOk t           -> convertType tcs mn ds tDeclMap t
