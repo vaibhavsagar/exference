@@ -17,6 +17,7 @@ import qualified Language.Haskell.Exference.Core.Expression as E
 import qualified Language.Haskell.Exference.Core.Types as T
 import qualified Language.Haskell.Exference.Core.TypeUtils as TU
 import Language.Haskell.Exts.Syntax
+import qualified Language.Haskell.Exts.SrcLoc as S
 
 import Control.Monad ( forM )
 
@@ -42,7 +43,7 @@ import Control.Monad.Trans.MultiState
 -- level 2 = full qualification (prevents infix operators)
 convert :: Int
         -> E.Expression
-        -> Exp
+        -> Exp S.SrcLoc
 convert q e = runIdentity
             $ runMultiStateTNil
             $ withMultiStateA (M.empty :: Map T.TVarId T.HsType)
@@ -52,7 +53,7 @@ convert q e = runIdentity
   where
     h (E.ExpLambda i ty e1) is = h e1 ((i, ty):is)
     h rhsExp [] = convertExp q rhsExp
-    h rhsExp is = [ Lambda noLoc (map (PVar . Ident) params) cr
+    h rhsExp is = [ Lambda noLoc (map (PVar noLoc . Ident noLoc) params) cr
                   | cr <- convertExp q rhsExp
                   , params <- mapM (T.showTypedVar . fst)
                                    (reverse is)
@@ -61,7 +62,7 @@ convert q e = runIdentity
 convertToFunc :: Int
               -> String
               -> E.Expression
-              -> Decl
+              -> Decl S.SrcLoc
 convertToFunc q ident e = runIdentity
                         $ runMultiStateTNil
                         $ withMultiStateA (M.empty :: Map T.TVarId T.HsType)
@@ -70,13 +71,12 @@ convertToFunc q ident e = runIdentity
                             h e []
   where
     h (E.ExpLambda i ty e1) is = h e1 ((i, ty):is)
-    h rhsExp is = [ FunBind [Match noLoc
-                                   (Ident ident)
-                                   (map (PVar . Ident) params)
-                                   Nothing
+    h rhsExp is = [ FunBind noLoc [Match noLoc
+                                   (Ident noLoc ident)
+                                   (map (PVar noLoc . Ident noLoc) params)
                                    rhs'
                                    Nothing]
-                  | rhs' <- UnGuardedRhs <$> convertExp q rhsExp
+                  | rhs' <- UnGuardedRhs noLoc <$> convertExp q rhsExp
                   , params <- mapM (T.showTypedVar . fst) (reverse is)
                   ]
 
@@ -84,11 +84,11 @@ convertToFunc q ident e = runIdentity
 -- level 0 = no qualication
 -- level 1 = qualification for anything but infix operators
 -- level 2 = full qualification (prevents infix operators)
-convertExp :: Int -> E.Expression -> MultiState '[Map T.TVarId T.HsType] Exp
+convertExp :: Int -> E.Expression -> MultiState '[Map T.TVarId T.HsType] (Exp S.SrcLoc)
 convertExp q = convertInternal q 0
 
-parens :: Bool -> Exp -> Exp
-parens True e = Paren e
+parens :: Bool -> Exp S.SrcLoc -> Exp S.SrcLoc
+parens True e = Paren noLoc e
 parens False e = e
 
 -- qualification level -> precedence -> expression
@@ -96,61 +96,61 @@ parens False e = e
 -- level 1 = qualification for anything but infix operators
 -- level 2 = full qualification (prevents infix operators)
 convertInternal
-  :: Int -> Int -> E.Expression -> MultiState '[Map T.TVarId T.HsType] Exp
-convertInternal _ _ (E.ExpVar i _) = Var . UnQual . Ident
+  :: Int -> Int -> E.Expression -> MultiState '[Map T.TVarId T.HsType] (Exp S.SrcLoc)
+convertInternal _ _ (E.ExpVar i _) = Var noLoc . UnQual noLoc . Ident noLoc
                                     <$> T.showTypedVar i
 convertInternal q _ (E.ExpName qn) =
-  return $ Con $ UnQual $ Ident $ convertName q qn
+  return $ Con noLoc $ UnQual noLoc $ Ident noLoc $ convertName q qn
 convertInternal q p (E.ExpLambda i _ e) =
-  [ parens (p>=1) $ Lambda noLoc [PVar $ Ident $ vname] ce
+  [ parens (p>=1) $ Lambda noLoc [PVar noLoc $ Ident noLoc $ vname] ce
   | ce <- convertInternal q 0 e
   , vname <- T.showTypedVar i
   ]
 convertInternal q p (E.ExpApply e1 pe) = recurseApply e1 [pe]
   where
-    defaultApply :: E.Expression -> [E.Expression] -> MultiState '[Map T.TVarId T.HsType] Exp
+    defaultApply :: E.Expression -> [E.Expression] -> MultiState '[Map T.TVarId T.HsType] (Exp S.SrcLoc)
     defaultApply e pes = do
       f  <- convertInternal q 2 e
       ps <- mapM (convertInternal q 3) pes
-      return $ parens (p>=3) $ foldl App f ps
-    recurseApply :: E.Expression -> [E.Expression] -> MultiState '[Map T.TVarId T.HsType] Exp
+      return $ parens (p>=3) $ foldl (App noLoc) f ps
+    recurseApply :: E.Expression -> [E.Expression] -> MultiState '[Map T.TVarId T.HsType] (Exp S.SrcLoc)
     recurseApply (E.ExpApply e1' pe') pes = recurseApply e1' (pe':pes)
     recurseApply e@(E.ExpName qname) pes = do
       case qname of
         T.TupleCon i
           | i==length pes
           , q<2 ->
-            Tuple Boxed <$> mapM (convertInternal q 0) pes
+            Tuple noLoc Boxed <$> mapM (convertInternal q 0) pes
         T.Cons
           | q<2
           , [p1, p2] <- pes -> do
               q1 <- convertInternal q 1 p1
               q2 <- convertInternal q 2 p2
-              return $ parens (p>=2) $ InfixApp
+              return $ parens (p>=2) $ InfixApp noLoc
                 q1
-                (QVarOp $ UnQual $ Symbol ":")
+                (QVarOp noLoc $ UnQual noLoc $ Symbol noLoc ":")
                 q2            
         T.QualifiedName _ ('(':opR)
           | q<2
           , [p1, p2] <- pes -> do
               q1 <- convertInternal q 1 p1
               q2 <- convertInternal q 2 p2
-              return $ parens (p>=2) $ InfixApp
+              return $ parens (p>=2) $ InfixApp noLoc
                 q1
-                (QVarOp $ UnQual $ Symbol $ takeWhile (/=')') opR)
+                (QVarOp noLoc $ UnQual noLoc $ Symbol noLoc $ takeWhile (/=')') opR)
                 q2
         _ -> defaultApply e pes
     recurseApply e pes = defaultApply e pes
-convertInternal _ _ (E.ExpHole i) = return $ Var
-                                           $ UnQual
-                                           $ Ident
+convertInternal _ _ (E.ExpHole i) = return $ Var noLoc
+                                           $ UnQual noLoc
+                                           $ Ident noLoc
                                            $ "_"++T.showVar i
 convertInternal q p (E.ExpLet i _ bindE inE) = do
   rhs <- convertInternal q 0 bindE
   varName <- T.showTypedVar i
   let convBind = PatBind noLoc
-                   (PVar $ Ident $ varName)
-                   (UnGuardedRhs $ rhs)
+                   (PVar noLoc $ Ident noLoc $ varName)
+                   (UnGuardedRhs noLoc $ rhs)
                    Nothing
   e <- convertInternal q 0 inE
   return $ parens (p>=2) $ mergeLet convBind e
@@ -159,9 +159,9 @@ convertInternal q p (E.ExpLetMatch n ids bindE inE) = do
   let name = convertName q n
   varNames <- mapM (T.showTypedVar . fst) ids
   let convBind = PatBind noLoc
-                   (PParen $ PApp (UnQual $ Ident $ name)
-                                  (map (PVar . Ident) varNames))
-                   (UnGuardedRhs $ rhs)
+                   (PParen noLoc $ PApp noLoc (UnQual noLoc $ Ident noLoc $ name)
+                                  (map (PVar noLoc . Ident noLoc) varNames))
+                   (UnGuardedRhs noLoc $ rhs)
                    Nothing
   e <- convertInternal q 0 inE
   return $ parens (p>=2) $ mergeLet convBind e
@@ -172,22 +172,22 @@ convertInternal q p (E.ExpCaseMatch bindE alts) = do
     let name = convertName q c
     varNames <- mapM (T.showTypedVar . fst) vars
     return $ Alt noLoc
-        (PApp (UnQual $ Ident $ name)
-              (map (PVar . Ident) varNames))
-        (UnGuardedRhs $ rhs)
+        (PApp noLoc (UnQual noLoc $ Ident noLoc $ name)
+              (map (PVar noLoc . Ident noLoc) varNames))
+        (UnGuardedRhs noLoc $ rhs)
         Nothing
-  return $ parens (p>=2) $ Case e as
+  return $ parens (p>=2) $ Case noLoc e as
 
 convertName :: Int -> T.QualifiedName -> String
 convertName d qn = case (d, qn) of
   (0, T.QualifiedName _ n) -> n
   (_, n)                   -> show n
 
-mergeLet :: Decl -> Exp -> Exp
-mergeLet convBind (Let (BDecls otherBinds) finalIn)
-  = Let (BDecls $ convBind:otherBinds) finalIn
+mergeLet :: Decl S.SrcLoc -> Exp S.SrcLoc -> Exp S.SrcLoc
+mergeLet convBind (Let _ (BDecls _ otherBinds) finalIn)
+  = Let noLoc (BDecls noLoc $ convBind:otherBinds) finalIn
 mergeLet convBind finalIn                 
-  = Let (BDecls [convBind]) finalIn
+  = Let noLoc (BDecls noLoc [convBind]) finalIn
 
-noLoc :: SrcLoc
-noLoc = SrcLoc "" 0 0
+noLoc :: S.SrcLoc
+noLoc = S.SrcLoc "" 0 0

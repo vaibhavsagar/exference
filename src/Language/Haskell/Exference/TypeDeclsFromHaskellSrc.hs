@@ -20,6 +20,7 @@ import Language.Haskell.Exference.Core.TypeUtils
 import Language.Haskell.Exference.TypeFromHaskellSrc
 
 import Language.Haskell.Exts.Syntax
+import qualified Language.Haskell.Exts.SrcLoc as S
 import qualified Language.Haskell.Exts.Parser as P
 
 import Control.Monad.Trans.MultiRWS
@@ -157,7 +158,7 @@ convertTypeInternal tcs defModuleName ds declMap t = do
 parseType
   :: (Monad m)
   => [HsTypeClass]
-  -> Maybe (ModuleName l)
+  -> Maybe (ModuleName S.SrcSpanInfo)
   -> [QualifiedName]
   -> TypeDeclMap
   -> P.ParseMode
@@ -165,7 +166,7 @@ parseType
   -> EitherT
        String
        (MultiRWST r w s m)
-       (HsType, TypeVarIndex l)
+       (HsType, TypeVarIndex S.SrcSpanInfo)
 parseType tcs mn ds tDeclMap m s = case P.parseTypeWithMode m s of
   f@(P.ParseFailed _ _) -> left $ show f
   P.ParseOk t           -> convertType tcs mn ds tDeclMap t
